@@ -1,5 +1,5 @@
 blueprint:
-  name: Unavailable entity detection & notification
+  name: Unavailable entity detection & notification (with Last Seen)
   description: >
     Regularly test all entities' status to check for unavailability.
     Supports exclusion by entities, devices, areas, and labels for flexible filtering.
@@ -95,7 +95,7 @@ variables:
   # Entity monitoring configuration
   exclude: !input 'exclude'                      # Exclusion input from blueprint
 
-  # === UNAVAILABLE ENTITY DETECTION WITH EXCLUSION LOGIC ===
+  # === UNAVAILABLE ENTITY + STALE LAST_SEEN DETECTION WITH EXCLUSION LOGIC ===
   # Build a list of unavailable entities, excluding those specified by the user
   # Exclusion supports entities, devices, areas, and labels for maximum flexibility
   unformatted_entities: >-
@@ -158,12 +158,35 @@ variables:
       {% endfor %}
     {% endif %}
 
-    {# === UNAVAILABLE SENSOR DETECTION === #}
-    {# Find all unavailable sensors, excluding those in exclusion list #}
+    {# === UNAVAILABLE ENTITY DETECTION === #}
     {% for state in states | selectattr('state', 'eq', 'unavailable') %}
-        {% if state.state == 'unavailable' and not state.entity_id in result.excludedEntities and (not device_id(state.entity_id) or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
-          {% set result.includedEntities = result.includedEntities + [state.name] %}
+        {% if state.state == 'unavailable'
+              and not state.entity_id in result.excludedEntities
+              and (not device_id(state.entity_id)
+                   or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
+          {% if state.name not in result.includedEntities %}
+            {% set result.includedEntities = result.includedEntities + [state.name] %}
+          {% endif %}
         {% endif %}
+    {% endfor %}
+
+    {# === "LAST SEEN" SENSORS OLDER THAN 1 DAY === #}
+    {% set cutoff_ts = as_timestamp(now() - timedelta(days=1)) %}
+    {% for state in states.sensor %}
+      {% set is_last_seen = state.entity_id.endswith('_last_seen') %}
+      {% set is_timestamp = (state_attr(state.entity_id, 'device_class') == 'timestamp') %}
+      {% if (is_last_seen or is_timestamp) and state.state not in ['unknown', 'unavailable'] %}
+        {% set last_seen_ts = as_timestamp(state.state, 0) %}
+        {% if last_seen_ts > 0
+              and last_seen_ts < cutoff_ts
+              and not state.entity_id in result.excludedEntities
+              and (not device_id(state.entity_id)
+                   or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
+          {% if state.name not in result.includedEntities %}
+            {% set result.includedEntities = result.includedEntities + [state.name ~ ' (last seen > 1 day ago)'] %}
+          {% endif %}
+        {% endif %}
+      {% endif %}
     {% endfor %}
     
     {# Return the list of entities for checking #}
@@ -181,7 +204,7 @@ trigger:
 
 
 # === AUTOMATION CONDITIONS ===
-# Only run if it's a selected weekday and there are unavailable entities
+# Only run if it's a selected weekday and there are unavailable/stale entities
 condition:
   # Check if automation should run on the current weekday
   - condition: template
@@ -197,7 +220,7 @@ condition:
         }}
 
 
-  # Only proceed if there are actually unavailable entities to report
+  # Only proceed if there are actually entities to report
   - condition: template
     value_template: >-
         {{ unformatted_entities | length > 0 }}
