@@ -182,7 +182,7 @@ variables:
               and (not device_id(state.entity_id)
                    or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
           {% if state.name not in result.includedEntities %}
-            {% set result.includedEntities = result.includedEntities + [state.name ~ ' (last seen > 2 days ago)'] %}
+            {% set result.includedEntities = result.includedEntities + [state.name ~ ' (> 2 days ago)'] %}
           {% endif %}
         {% endif %}
       {% endif %}
