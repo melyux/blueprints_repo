@@ -15,7 +15,7 @@ blueprint:
       default: '10:00:00'
       selector:
         time: {}
-    
+
     # === WEEKDAY SCHEDULE CONFIGURATION ===
     # Select which days of the week to run the unavailable entity check
     monday_enabled:
@@ -61,6 +61,20 @@ blueprint:
       selector:
         boolean:
 
+    # === LAST SEEN CONFIGURATION ===
+    # Configure how old a *_last_seen sensor must be before it is reported
+    last_seen_days:
+      name: Last seen threshold (days)
+      description: Report *_last_seen sensors older than this many days
+      default: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+          unit_of_measurement: days
+
     # === EXCLUSION CONFIGURATION ===
     # Define which entities to exclude from unavailability monitoring
     exclude:
@@ -94,6 +108,7 @@ variables:
 
   # Entity monitoring configuration
   exclude: !input 'exclude'                      # Exclusion input from blueprint
+  last_seen_days: !input 'last_seen_days'        # Threshold for stale *_last_seen sensors (in days)
 
   # === UNAVAILABLE ENTITY + STALE LAST_SEEN DETECTION WITH EXCLUSION LOGIC ===
   # Build a list of unavailable entities, excluding those specified by the user
@@ -103,7 +118,7 @@ variables:
 
     {# === ENTITY EXCLUSION === #}
     {# Exclude specific entities directly by entity_id #}
-    {% if exclude.entity_id is defined %} 
+    {% if exclude.entity_id is defined %}
         {% set result.excludedEntities = result.excludedEntities + ([exclude.entity_id] if exclude.entity_id is string else exclude.entity_id) %}
     {% endif %}
 
@@ -170,8 +185,8 @@ variables:
         {% endif %}
     {% endfor %}
 
-    {# === "LAST SEEN" SENSORS OLDER THAN 2 DAYS === #}
-    {% set cutoff_ts = as_timestamp(now() - timedelta(days=2)) %}
+    {# === "LAST SEEN" SENSORS OLDER THAN X DAYS === #}
+    {% set cutoff_ts = as_timestamp(now() - timedelta(days=(last_seen_days | int))) %}
     {% for state in states.sensor %}
       {% set is_last_seen = state.entity_id.endswith('_last_seen') %}
       {% if is_last_seen and state.state not in ['unknown', 'unavailable'] %}
@@ -182,12 +197,13 @@ variables:
               and (not device_id(state.entity_id)
                    or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
           {% if state.name not in result.includedEntities %}
-            {% set result.includedEntities = result.includedEntities + [state.name ~ ' (> 2 days ago)'] %}
+            {% set suffix = ' (> ' ~ (last_seen_days | int) ~ ' day' ~ ('s' if (last_seen_days | int) != 1 else '') ~ ' ago)' %}
+            {% set result.includedEntities = result.includedEntities + [state.name ~ suffix] %}
           {% endif %}
         {% endif %}
       {% endif %}
     {% endfor %}
-    
+
     {# Return the list of entities for checking #}
     {{ result.includedEntities }}
 
@@ -208,11 +224,11 @@ condition:
   # Check if automation should run on the current weekday
   - condition: template
     value_template: >-
-        {{ 
-          (current_day == 0 and monday_enabled) or 
-          (current_day == 1 and tuesday_enabled) or 
+        {{
+          (current_day == 0 and monday_enabled) or
+          (current_day == 1 and tuesday_enabled) or
           (current_day == 2 and wednesday_enabled) or
-          (current_day == 3 and thursday_enabled) or 
+          (current_day == 3 and thursday_enabled) or
           (current_day == 4 and friday_enabled) or
           (current_day == 5 and saturday_enabled) or
           (current_day == 6 and sunday_enabled)
