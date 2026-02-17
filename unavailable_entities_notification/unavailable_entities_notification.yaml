@@ -84,11 +84,30 @@ blueprint:
       selector:
         target:
 
+    # === DEDUPLICATION / GROUPING ===
+    # Reduce notification noise by grouping unavailable entities that belong to the same device
+    collapse_by_device:
+      name: Collapse unavailable entities by device
+      description: If enabled, multiple unavailable entities from the same device are collapsed into a single entry (device name).
+      default: True
+      selector:
+        boolean: {}
+    collapse_device_threshold:
+      name: Collapse threshold (per device)
+      description: Minimum number of unavailable entities from the same device before collapsing. Set to 1 to always collapse.
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 50
+          step: 1
+          mode: box
+
     # === NOTIFICATION ACTIONS ===
     # Define what happens when unavailable entities are detected
     actions:
       name: Actions
-      description: Notifications or similar to be run. {{entities}} is replaced with a formated list of the names of unavailable entities. {{unformatted_entities}} is also available as an unformatted list for advanced templating.
+      description: Notifications or similar to be run. {{entities}} is replaced with a formatted list of the names of unavailable entities/devices. {{unformatted_entities}} is also available as an unformatted list for advanced templating.
       selector:
         action:
 
@@ -109,12 +128,14 @@ variables:
   # Entity monitoring configuration
   exclude: !input 'exclude'                      # Exclusion input from blueprint
   last_seen_days: !input 'last_seen_days'        # Threshold for stale *_last_seen sensors (in days)
+  collapse_by_device: !input 'collapse_by_device'
+  collapse_device_threshold: !input 'collapse_device_threshold'
 
   # === UNAVAILABLE ENTITY + STALE LAST_SEEN DETECTION WITH EXCLUSION LOGIC ===
   # Build a list of unavailable entities, excluding those specified by the user
   # Exclusion supports entities, devices, areas, and labels for maximum flexibility
   unformatted_entities: >-
-    {% set result = namespace(includedEntities=[], excludedEntities = []) %}
+    {% set result = namespace(includedEntities=[], excludedEntities=[], includedDeviceIds=[], unavailableEntityIds=[], deviceUnavailableCounts={}) %}
 
     {# === ENTITY EXCLUSION === #}
     {# Exclude specific entities directly by entity_id #}
@@ -174,15 +195,36 @@ variables:
     {% endif %}
 
     {# === UNAVAILABLE ENTITY DETECTION === #}
+    {# First pass: collect unavailable entity_ids and count how many per device #}
     {% for state in states | selectattr('state', 'eq', 'unavailable') %}
-        {% if state.state == 'unavailable'
-              and not state.entity_id in result.excludedEntities
-              and (not device_id(state.entity_id)
-                   or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
-          {% if state.name not in result.includedEntities %}
-            {% set result.includedEntities = result.includedEntities + [state.name] %}
-          {% endif %}
+      {% set did = device_id(state.entity_id) %}
+      {% if state.state == 'unavailable'
+            and not state.entity_id in result.excludedEntities
+            and (not did or not device_attr(did, 'disabled_by')) %}
+        {% set _ = result.unavailableEntityIds.append(state.entity_id) %}
+        {% if did %}
+          {% set _ = result.deviceUnavailableCounts.update({did: (result.deviceUnavailableCounts.get(did, 0) + 1)}) %}
         {% endif %}
+      {% endif %}
+    {% endfor %}
+
+    {# Second pass: build the final report list, optionally collapsing by device #}
+    {% for entity_id in result.unavailableEntityIds %}
+      {% set state = states[entity_id] %}
+      {% set did = device_id(entity_id) %}
+      {% if collapse_by_device and did and (result.deviceUnavailableCounts.get(did, 0) >= (collapse_device_threshold | int)) %}
+        {% if did not in result.includedDeviceIds %}
+          {% set device_name = device_attr(did, 'name_by_user') or device_attr(did, 'name') or state.name %}
+          {% set count = result.deviceUnavailableCounts.get(did, 0) %}
+          {% set word = 'entity' if count == 1 else 'entities' %}
+          {% set _ = result.includedEntities.append(device_name ~ ' (' ~ count ~ ' ' ~ word ~ ' unavailable)') %}
+          {% set _ = result.includedDeviceIds.append(did) %}
+        {% endif %}
+      {% else %}
+        {% if state.name not in result.includedEntities %}
+          {% set _ = result.includedEntities.append(state.name) %}
+        {% endif %}
+      {% endif %}
     {% endfor %}
 
     {# === "LAST SEEN" SENSORS OLDER THAN X DAYS === #}
@@ -196,9 +238,18 @@ variables:
               and not state.entity_id in result.excludedEntities
               and (not device_id(state.entity_id)
                    or not device_attr(device_id(state.entity_id), 'disabled_by')) %}
-          {% if state.name not in result.includedEntities %}
-            {% set suffix = ' (> ' ~ (last_seen_days | int) ~ ' day' ~ ('s' if (last_seen_days | int) != 1 else '') ~ ' ago)' %}
-            {% set result.includedEntities = result.includedEntities + [state.name ~ suffix] %}
+          {% set did = device_id(state.entity_id) %}
+          {% set suffix = ' (> ' ~ (last_seen_days | int) ~ ' day' ~ ('s' if (last_seen_days | int) != 1 else '') ~ ' ago)' %}
+          {% if collapse_by_device and did %}
+            {% if did not in result.includedDeviceIds %}
+              {% set device_name = device_attr(did, 'name_by_user') or device_attr(did, 'name') or state.name %}
+              {% set _ = result.includedEntities.append(device_name ~ suffix) %}
+              {% set _ = result.includedDeviceIds.append(did) %}
+            {% endif %}
+          {% else %}
+            {% if state.name not in result.includedEntities %}
+              {% set _ = result.includedEntities.append(state.name ~ suffix) %}
+            {% endif %}
           {% endif %}
         {% endif %}
       {% endif %}
