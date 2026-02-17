@@ -201,9 +201,10 @@ variables:
       {% if state.state == 'unavailable'
             and not state.entity_id in result.excludedEntities
             and (not did or not device_attr(did, 'disabled_by')) %}
-        {% set _ = result.unavailableEntityIds.append(state.entity_id) %}
+        {% set result.unavailableEntityIds = result.unavailableEntityIds + [state.entity_id] %}
         {% if did %}
-          {% set _ = result.deviceUnavailableCounts.update({did: (result.deviceUnavailableCounts.get(did, 0) + 1)}) %}
+          {% set current = result.deviceUnavailableCounts[did] | default(0) %}
+          {% set result.deviceUnavailableCounts = result.deviceUnavailableCounts | combine({did: (current + 1)}) %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -212,17 +213,17 @@ variables:
     {% for entity_id in result.unavailableEntityIds %}
       {% set state = states[entity_id] %}
       {% set did = device_id(entity_id) %}
-      {% if collapse_by_device and did and (result.deviceUnavailableCounts.get(did, 0) >= (collapse_device_threshold | int)) %}
+      {% set count = result.deviceUnavailableCounts[did] | default(0) if did else 0 %}
+      {% if collapse_by_device and did and (count >= (collapse_device_threshold | int)) %}
         {% if did not in result.includedDeviceIds %}
           {% set device_name = device_attr(did, 'name_by_user') or device_attr(did, 'name') or state.name %}
-          {% set count = result.deviceUnavailableCounts.get(did, 0) %}
           {% set word = 'entity' if count == 1 else 'entities' %}
-          {% set _ = result.includedEntities.append(device_name ~ ' (' ~ count ~ ' ' ~ word ~ ' unavailable)') %}
-          {% set _ = result.includedDeviceIds.append(did) %}
+          {% set result.includedEntities = result.includedEntities + [device_name ~ ' (' ~ count ~ ' ' ~ word ~ ' unavailable)'] %}
+          {% set result.includedDeviceIds = result.includedDeviceIds + [did] %}
         {% endif %}
       {% else %}
         {% if state.name not in result.includedEntities %}
-          {% set _ = result.includedEntities.append(state.name) %}
+          {% set result.includedEntities = result.includedEntities + [state.name] %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -243,12 +244,12 @@ variables:
           {% if collapse_by_device and did %}
             {% if did not in result.includedDeviceIds %}
               {% set device_name = device_attr(did, 'name_by_user') or device_attr(did, 'name') or state.name %}
-              {% set _ = result.includedEntities.append(device_name ~ suffix) %}
-              {% set _ = result.includedDeviceIds.append(did) %}
+              {% set result.includedEntities = result.includedEntities + [device_name ~ suffix] %}
+              {% set result.includedDeviceIds = result.includedDeviceIds + [did] %}
             {% endif %}
           {% else %}
             {% if state.name not in result.includedEntities %}
-              {% set _ = result.includedEntities.append(state.name ~ suffix) %}
+              {% set result.includedEntities = result.includedEntities + [state.name ~ suffix] %}
             {% endif %}
           {% endif %}
         {% endif %}
