@@ -16,6 +16,35 @@ blueprint:
       selector:
         time: {}
 
+    # === UNAVAILABLE DURATION CONFIGURATION ===
+    # Configure how long an entity must remain unavailable before it is reported
+    unavailable_for_enabled:
+      name: Require unavailable duration
+      description: If enabled, only report entities that have been unavailable for at least the configured amount of time
+      default: False
+      selector:
+        boolean: {}
+    unavailable_for_value:
+      name: Unavailable threshold value
+      description: Numeric amount of time an entity must remain unavailable before being reported
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 10080
+          step: 1
+          mode: box
+    unavailable_for_unit:
+      name: Unavailable threshold unit
+      description: Unit used for the unavailable threshold
+      default: minutes
+      selector:
+        select:
+          options:
+            - minutes
+            - hours
+            - days
+
     # === WEEKDAY SCHEDULE CONFIGURATION ===
     # Select which days of the week to run the unavailable entity check
     monday_enabled:
@@ -127,6 +156,9 @@ variables:
 
   # Entity monitoring configuration
   exclude: !input 'exclude'                      # Exclusion input from blueprint
+  unavailable_for_enabled: !input 'unavailable_for_enabled'
+  unavailable_for_value: !input 'unavailable_for_value'
+  unavailable_for_unit: !input 'unavailable_for_unit'
   last_seen_days: !input 'last_seen_days'        # Threshold for stale *_last_seen sensors (in days)
   collapse_by_device: !input 'collapse_by_device'
   collapse_device_threshold: !input 'collapse_device_threshold'
@@ -136,6 +168,8 @@ variables:
   # Exclusion supports entities, devices, areas, and labels for maximum flexibility
   unformatted_entities: >-
     {% set result = namespace(includedEntities=[], excludedEntities=[], includedDeviceIds=[], unavailableEntityIds=[], deviceUnavailableCounts={}) %}
+    {% set unavailable_for_value_int = unavailable_for_value | int %}
+    {% set unavailable_for_seconds = unavailable_for_value_int * (60 if unavailable_for_unit == 'minutes' else 3600 if unavailable_for_unit == 'hours' else 86400) %}
 
     {# === ENTITY EXCLUSION === #}
     {# Exclude specific entities directly by entity_id #}
@@ -195,12 +229,14 @@ variables:
     {% endif %}
 
     {# === UNAVAILABLE ENTITY DETECTION === #}
-    {# First pass: collect unavailable entity_ids and count how many per device #}
+    {# First pass: collect qualifying unavailable entity_ids and count how many per device #}
     {% for state in states | selectattr('state', 'eq', 'unavailable') %}
       {% set did = device_id(state.entity_id) %}
+      {% set unavailable_seconds = as_timestamp(now()) - as_timestamp(state.last_changed, 0) %}
       {% if state.state == 'unavailable'
             and not state.entity_id in result.excludedEntities
-            and (not did or not device_attr(did, 'disabled_by')) %}
+            and (not did or not device_attr(did, 'disabled_by'))
+            and (not unavailable_for_enabled or unavailable_seconds >= unavailable_for_seconds) %}
         {% set result.unavailableEntityIds = result.unavailableEntityIds + [state.entity_id] %}
         {% if did %}
           {% set current = result.deviceUnavailableCounts[did] | default(0) %}
