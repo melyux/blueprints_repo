@@ -167,9 +167,23 @@ variables:
   # Build a list of unavailable entities, excluding those specified by the user
   # Exclusion supports entities, devices, areas, and labels for maximum flexibility
   unformatted_entities: >-
-    {% set result = namespace(includedEntities=[], excludedEntities=[], includedDeviceIds=[], unavailableEntityIds=[], deviceUnavailableCounts={}) %}
+    {% set result = namespace(includedEntities=[], includedNames=[], excludedEntities=[], includedDeviceIds=[], unavailableEntityIds=[], deviceUnavailableCounts={}, deviceLongestUnavailableSeconds={}) %}
+    {% set now_ts = as_timestamp(now()) %}
     {% set unavailable_for_value_int = unavailable_for_value | int %}
     {% set unavailable_for_seconds = unavailable_for_value_int * (60 if unavailable_for_unit == 'minutes' else 3600 if unavailable_for_unit == 'hours' else 86400) %}
+    {% macro compact_duration(seconds) -%}
+      {%- set seconds = seconds | int -%}
+      {%- if seconds < 3600 -%}
+        {%- set value = (((seconds + 30) // 60) | int) -%}
+        {{- (1 if value < 1 else value) ~ 'm' -}}
+      {%- elif seconds < 86400 -%}
+        {%- set value = (((seconds + 1800) // 3600) | int) -%}
+        {{- (1 if value < 1 else value) ~ 'h' -}}
+      {%- else -%}
+        {%- set value = (((seconds + 43200) // 86400) | int) -%}
+        {{- (1 if value < 1 else value) ~ 'd' -}}
+      {%- endif -%}
+    {%- endmacro %}
 
     {# === ENTITY EXCLUSION === #}
     {# Exclude specific entities directly by entity_id #}
@@ -232,7 +246,7 @@ variables:
     {# First pass: collect qualifying unavailable entity_ids and count how many per device #}
     {% for state in states | selectattr('state', 'eq', 'unavailable') %}
       {% set did = device_id(state.entity_id) %}
-      {% set unavailable_seconds = as_timestamp(now()) - as_timestamp(state.last_changed, 0) %}
+      {% set unavailable_seconds = now_ts - as_timestamp(state.last_changed, 0) %}
       {% if state.state == 'unavailable'
             and not state.entity_id in result.excludedEntities
             and (not did or not device_attr(did, 'disabled_by'))
@@ -241,6 +255,10 @@ variables:
         {% if did %}
           {% set current = result.deviceUnavailableCounts[did] | default(0) %}
           {% set result.deviceUnavailableCounts = result.deviceUnavailableCounts | combine({did: (current + 1)}) %}
+          {% set longest = result.deviceLongestUnavailableSeconds[did] | default(0) %}
+          {% if unavailable_seconds > longest %}
+            {% set result.deviceLongestUnavailableSeconds = result.deviceLongestUnavailableSeconds | combine({did: unavailable_seconds}) %}
+          {% endif %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -250,16 +268,20 @@ variables:
       {% set state = states[entity_id] %}
       {% set did = device_id(entity_id) %}
       {% set count = result.deviceUnavailableCounts[did] | default(0) if did else 0 %}
+      {% set unavailable_seconds = now_ts - as_timestamp(state.last_changed, 0) %}
+      {% set unavailable_duration = compact_duration(unavailable_seconds) %}
       {% if collapse_by_device and did and (count >= (collapse_device_threshold | int)) %}
         {% if did not in result.includedDeviceIds %}
           {% set device_name = device_attr(did, 'name_by_user') or device_attr(did, 'name') or state.name %}
-          {% set word = 'entity' if count == 1 else 'entities' %}
-          {% set result.includedEntities = result.includedEntities + [device_name ~ ' (' ~ count ~ ' ' ~ word ~ ' unavailable)'] %}
+          {% set device_unavailable_seconds = result.deviceLongestUnavailableSeconds[did] | default(unavailable_seconds) %}
+          {% set device_unavailable_duration = compact_duration(device_unavailable_seconds) %}
+          {% set result.includedEntities = result.includedEntities + [device_name ~ ' (for ' ~ device_unavailable_duration ~ ')'] %}
           {% set result.includedDeviceIds = result.includedDeviceIds + [did] %}
         {% endif %}
       {% else %}
-        {% if state.name not in result.includedEntities %}
-          {% set result.includedEntities = result.includedEntities + [state.name] %}
+        {% if state.name not in result.includedNames %}
+          {% set result.includedEntities = result.includedEntities + [state.name ~ ' (for ' ~ unavailable_duration ~ ')'] %}
+          {% set result.includedNames = result.includedNames + [state.name] %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -284,8 +306,9 @@ variables:
               {% set result.includedDeviceIds = result.includedDeviceIds + [did] %}
             {% endif %}
           {% else %}
-            {% if state.name not in result.includedEntities %}
+            {% if state.name not in result.includedNames %}
               {% set result.includedEntities = result.includedEntities + [state.name ~ suffix] %}
+              {% set result.includedNames = result.includedNames + [state.name] %}
             {% endif %}
           {% endif %}
         {% endif %}
